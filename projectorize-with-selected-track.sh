@@ -4,11 +4,13 @@
 # Usage: ./projectorize-with-selected-track.sh <track-number> <input-directory> <output-directory>
 #
 # For every MKV file in the input directory:
-#   1. Unsets default flag on all tracks.
+#   1. Unsets the default flag on all non-video tracks.
 #   2. Sets the specified track (by track-number) as default.
 #   3. Checks if the specified track is Dolby (AC3 or E-AC3).
 #      - If yes, converts that track to AAC (while copying all other streams).
 #   4. Saves the output file with a _projectorized suffix in the output directory.
+#
+# Requirements: mkvmerge, mkvpropedit, ffmpeg, and ffprobe.
 
 if [ "$#" -ne 3 ]; then
   echo "Usage: $0 <track-number> <input-directory> <output-directory>"
@@ -36,26 +38,31 @@ for file in "$INPUT_DIR"/*.mkv; do
   echo "----------------------------------------"
   echo "Processing file: $file"
 
-  # Get all track IDs using mkvmerge.
+  # Build an array of non-video track IDs using mkvmerge.
+  # We only want to modify audio/subtitle tracks.
   track_ids=()
   while IFS= read -r line; do
-    if [[ $line =~ Track\ ID\ ([0-9]+): ]]; then
-      id="${BASH_REMATCH[1]}"
-      track_ids+=("$id")
+    # Example line: "Track ID 1: audio (A_AC3) [language:eng]"
+    # Only process lines that contain "audio" or "subtitles"
+    if echo "$line" | grep -iqE "audio|subtitles"; then
+      if [[ $line =~ Track\ ID\ ([0-9]+): ]]; then
+        id="${BASH_REMATCH[1]}"
+        track_ids+=("$id")
+      fi
     fi
   done < <(mkvmerge -i "$file")
 
   if [ ${#track_ids[@]} -eq 0 ]; then
-    echo "No tracks found in $file. Skipping."
+    echo "No non-video tracks found in $file. Skipping."
     continue
   fi
 
-  # Unselect default flag on all tracks.
+  # Unselect default flag on all non-video tracks.
   cmd=(mkvpropedit "$file")
   for id in "${track_ids[@]}"; do
     cmd+=(--edit "track:$id" --set "flag-default=0")
   done
-  echo "Unselecting default flags for all tracks..."
+  echo "Unselecting default flags for all non-video tracks..."
   "${cmd[@]}"
 
   # Now mark the selected track as default.
@@ -85,8 +92,8 @@ for file in "$INPUT_DIR"/*.mkv; do
 
   if [ $is_dolby -eq 1 ]; then
     echo "Converting track $TRACK_N from Dolby to AAC..."
-    # Note: This assumes that the ffmpeg audio stream order corresponds with track numbers.
-    # Often, video is stream 0, so audio stream index for selected track = TRACK_N - 1.
+    # Note: This assumes that ffmpeg’s audio stream order corresponds with track numbers.
+    # Often, video is stream 0, so the ffmpeg audio stream index for the selected track equals TRACK_N - 1.
     ffmpeg_audio_index=$((TRACK_N - 1))
     # Convert the selected audio track while copying all other streams.
     ffmpeg -i "$file" -map 0 -c:v copy -c:a copy -c:a:$ffmpeg_audio_index aac -b:a 192k "$output" -y
